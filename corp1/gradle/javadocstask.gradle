@@ -1,0 +1,19 @@
+project(':storm') {
+
+  /** Javadoc aggregator. */
+  task javadocs(type: Javadoc) {
+    group = groups.AGGR
+    description =
+      'all javadocs --> .../build/storm/aggregates/javadocs/allclasses-frame.html'
+    options.encoding = 'ISO-8859-1'
+    options.addStringOption('XDignore.symbol.file', '-quiet')
+
+    destinationDir = file("$buildDir/aggregates/javadocs")
+    source = javaSourceSets.collect { sourceSetName, sourceSet ->
+      sourceSet.allJava
+    }
+    classpath = files(javaSourceSets.collect { sourceSetName, sourceSet ->
+      sourceSet.compileClasspath
+    })
+  }
+}

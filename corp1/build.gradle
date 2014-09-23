@@ -1,0 +1,154 @@
+/**
+ * Full documentation is available at goto/storm wiki site.
+ * Especially look at "Basic Storm Training Presentation" for more details of build process.
+ */
+
+/** Groups for tasks display. */
+ext.groups = [
+    AGGR: 'Aggregation',
+    ARCHIVE: 'Archive',
+    TESTSUITE: 'Test Suites',
+]
+
+/** Rules defined within BUILD files. */
+ext.rules = [
+  JAVABUILD: 'javabuild',
+  JAVAEAR: 'javaear',
+  JAVAJAR: 'javajar',
+  JAVAWAR: 'javawar',
+  JAVAWAR2JAR: 'javawar2jar',
+  TESTSUITE: 'testsuite',
+]
+
+/** Types used to interface with Gradle plugins. */
+ext.types = [
+  BASE: '',
+  CONFIG: 'Compile',
+  DEPLOY: 'Deploy',
+  JAR: 'Jar',
+  SOURCE_SET: '',
+  TEST: 'Test',
+  WAR: 'War',
+]
+
+/** Defines variables for all projects. */
+allprojects {
+  // used in naming archives
+  version = '1.0'
+
+  // load IDE specific plugins
+  String ide = System.env.STORM_IDE
+  if (ide.equals('eclipse')) {
+    apply plugin: 'eclipse'
+  }
+  if (ide.equals('intellij')) {
+    apply plugin: 'idea'
+  }
+
+  // add prefix to jars to reduce confusion inside of war files
+  tasks.withType(Jar) { Jar jarTask ->
+    jarTask.duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+  }
+  tasks.withType(Tar) { Tar tarTask ->
+    tarTask.duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+  }
+  tasks.withType(War) { War warTask ->
+    warTask.duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+  }
+
+  // removes warning caused by implicit annotation processing (don't ask)
+  tasks.withType(JavaCompile) { JavaCompile compileTask ->
+    sourceCompatibility = 1.7
+    targetCompatibility = 1.7
+    options.define(
+        compilerArgs: [
+            "-implicit:class"
+        ]
+    )
+  }
+}
+
+/** Create master build directory to place all projects' buildDir within. */
+ext.masterBuildDir = rootProject.file('build')
+rootProject.buildDir = new File((File) rootProject.masterBuildDir, 'root')
+
+apply from: rootDir.canonicalPath + '/gradle/utilities.gradle'
+
+/** Set up storm project by processing metadata from BUILD files. */
+Project storm = project(':storm')
+project(':storm') {
+  buildDir = new File((File) rootProject.masterBuildDir, 'storm')
+  apply from: System.env.STORM_CENTRAL + '/libs.gradle'
+  apply from: rootDir.canonicalPath + '/gradle/java.gradle'
+
+  // read BUILD files to collect build specifications
+  ext.rootDirLength = rootDir.canonicalPath.length() + 1
+  ext.javaSourceSets = [:]
+  ext.javatestsNames = []
+
+  // caches are of class: Map</*rule*/String, Map</*dep*/String, /*spec*/ConfigObject>>
+  ext.mainBuildCache = cacheBuildFiles(storm,
+    fileTree(dir: rootDir.canonicalPath + '/java', include: '**/BUILD'))
+  ext.testBuildCache = cacheBuildFiles(storm,
+      fileTree(dir: rootDir.canonicalPath + '/javatests', include: '**/BUILD'))
+
+  // process build specifications to create source sets
+  apply from: rootDir.canonicalPath + '/gradle/javabuild.gradle'
+  // process build specifications to create ears
+  apply from: rootDir.canonicalPath + '/gradle/javaear.gradle'
+  // process build specifications to create jars
+  apply from: rootDir.canonicalPath + '/gradle/javajar.gradle'
+  // process build specifications to create wars
+  apply from: rootDir.canonicalPath + '/gradle/javawar.gradle'
+  // process build specifications to create jars from wars
+  apply from: rootDir.canonicalPath + '/gradle/javawar2jar.gradle'
+  // process build specifications to create test suites
+  apply from: rootDir.canonicalPath + '/gradle/testsuite.gradle'
+
+  // report on any unknown build rules
+  Set<String> keys = new HashSet<String>((Set<String>) mainBuildCache.keySet())
+  keys.addAll(new HashSet<String>((Set<String>) testBuildCache.keySet()))
+  rules.values().each { String validKeys ->
+    keys.remove(validKeys)
+  }
+  if (!keys.isEmpty()) {
+    throw new GradleException(box('unknown build rule(s): ' + keys.join(',')))
+  }
+}
+
+/** Read all BUILD files to create cache of build specifications. */
+Map</*rule*/String, Map</*dep*/String, /*spec*/ConfigObject>> cacheBuildFiles(
+    Project project, FileTree buildFiles) {
+  Map<String, Map<String, ConfigObject>> ruleMap = new HashMap<String, Map<String, ConfigObject>>()
+  buildFiles.each { File file ->
+    ConfigObject configs = new ConfigSlurper().parse(file.toURI().toURL())
+    String rootPath = file.parentFile.canonicalPath.substring(project.rootDirLength) - '/BUILD'
+    configs.each { config ->
+      // underscored used for uniqueness because ConfigSlurper is map of ConfigObjects and not list
+      String rule = stripAt(config.key, '_')
+      Map<String, ConfigObject> depMap = ruleMap[rule]
+      if (!depMap) {
+        depMap = new HashMap<String, ConfigObject>()
+        ruleMap[rule] = depMap
+      }
+      String name = (String) config.value.name
+      if (!name || name.trim().isEmpty()) {
+        throw new GradleException(box('no name specified: ' + rule + ' -- ' + rootPath))
+      }
+      String dep = pathAndNameToDep(rootPath, name)
+      if (depMap[dep]) {
+        throw new GradleException(box('duplicate name: ' + rule + ' -- ' + dep))
+      }
+      depMap[dep] = config.value
+      debug 'created entry for: ' + rule + ' -- ' + dep
+    }
+  }
+  return ruleMap
+}
+
+/** Load aggregates. */
+apply from: rootDir.canonicalPath + '/gradle/javadocstask.gradle'
+apply from: rootDir.canonicalPath + '/gradle/teststask.gradle'
+if (gradle.startParameter.taskNames.contains('jacocoTestReport')) {
+  apply from: rootDir.canonicalPath + '/gradle/jacoco.gradle'
+}

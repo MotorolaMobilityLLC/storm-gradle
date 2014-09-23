@@ -1,0 +1,117 @@
+/**
+ * Process build specifications to create jar tasks.
+ * Specifications contain following metadata:
+ *   name: name of jar task
+ *   basename: name of jar file created, if missing then defaults to name
+ *   classifier: classifier to jar file name
+ */
+
+/** Packages that generate their own jars (name extension : package). */
+ext.jars = [
+    Examples: '/examples/',
+    Testing: '/testing/',
+]
+
+ext.prepareJar = 'PrepareJar'
+
+// create all tasks upfront so they appear with 'gradle tasks' command
+mainBuildCache[rules.JAVAJAR].each { Map.Entry</*dep*/String, /*spec*/ConfigObject> depEntry ->
+  String taskBaseName = depAndTypeToUniqueName(depEntry.key, types.BASE)
+  createPrepareJarTask(project, taskBaseName, depEntry.key)
+  // main jar
+  createJarTask(project, taskBaseName, '', depEntry.key, depEntry.value)
+  // other supporting jars
+  jars.each { def mapEntry ->
+    createJarTask(project, taskBaseName, mapEntry.key, depEntry.key, depEntry.value)
+  }
+}
+
+/** Create a task to copy source and class files into temporary directories. */
+void createPrepareJarTask(Project project, String taskBaseName, String dep) {
+  String taskName = taskBaseName + prepareJar
+  project.task(taskName) {
+    debug 'creating prepare jar task: ' + taskName
+    group = groups.ARCHIVE
+    description = 'copy source & classes for: ' + dep
+    dependsOn project.test // make sure classes are built
+
+    // move all source and class files
+    doFirst { // this block is only executed during task execution and not during configuration
+      debug 'processing prepare jar task: ' + taskName
+      // set up a temporary directories to copy all source and class files to
+      File tmpDir = new File("$project.buildDir/tmp/" + taskBaseName + types.JAR)
+      copySourceAndClasses(project, dep, tmpDir.canonicalPath)
+    }
+  }
+}
+
+/** Create task for jar file. */
+void createJarTask(Project project, String taskBaseName, String suffix, String dep,
+    ConfigObject javajar) {
+  String taskName = taskBaseName + suffix + types.JAR
+  project.task(taskName, type:Jar) {
+    debug 'creating jar task: ' + taskName
+    group = groups.ARCHIVE
+    description = 'create jar for: ' + dep + (suffix.length() == 0 ? '' : ' (' + suffix + ')')
+    dependsOn taskBaseName + prepareJar // make sure files are ready
+
+    // process requested jar tasks to execute
+    doFirst { // this block is only executed during task execution and not during configuration
+      debug 'processing jar task: ' + taskName
+
+      // set up a temporary directory to copy all source and class files to
+      File tmpDir = new File("$project.buildDir/tmp/" + taskName)
+
+      // now define jar variables
+      baseName = (javajar.basename ?: javajar.name) +
+          ((suffix.length() == 0) ? '' : '-' + suffix.toLowerCase())
+      if (javajar.classifier) {
+        classifier = javajar.classifier
+      }
+      destinationDir = new File("$project.buildDir/dist")
+      version = today()
+      from tmpDir
+    }
+  }
+}
+
+/** Copy all relevant source and class files. */
+void copySourceAndClasses(Project project, String dep, String tmpDirPath) {
+  // copy all source files
+  FileTree sources =
+      fileTree(dir: rootDir.canonicalPath + '/' + stripRootSlashes(dep), include: '**/*.java')
+  sources.each { File file ->
+    int startIndex = file.canonicalPath.indexOf("${System.env.STORM_ROOT_PACKAGE}")
+    copyFile(tmpDirPath, file, startIndex)
+  }
+
+  // copy all class files
+  String pckg = stripRootSlashes(dep) - 'java'
+  String classesDir = "$project.buildDir/classes"
+  FileTree classes = fileTree(dir: classesDir, include: '**/*.class')
+  classes.each { File file ->
+    int startIndex = file.canonicalPath.indexOf(pckg) // also to skip non-relevant files
+    if (startIndex != -1 && !file.canonicalPath.contains('javatests')) {
+      copyFile(tmpDirPath, file, startIndex)
+    }
+  }
+}
+
+/** Moves file to temporary directory using startIndex to strip out uncopied path. */
+void copyFile(String tmpDirPath, File file, int startIndex) {
+  String relativeFilePath = file.canonicalPath.substring(startIndex)
+  String destFilePath = tmpDirPath + relativeFilePath
+  boolean alreadyCopied = false
+  jars.each { def mapEntry ->
+    if (relativeFilePath.contains(mapEntry.value)) {
+      destFilePath = tmpDirPath - types.JAR + mapEntry.key + types.JAR + relativeFilePath
+      debug ' << ' + relativeFilePath
+      executeCopy(file, destFilePath)
+      alreadyCopied = true
+    }
+  }
+  if (!alreadyCopied) {
+    debug ' << ' + relativeFilePath
+    executeCopy(file, destFilePath)
+  }
+}

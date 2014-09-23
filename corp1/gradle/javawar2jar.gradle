@@ -1,0 +1,115 @@
+/**
+ * Process build specifications to create jar from war tasks.
+ * Specifications contain following metadata:
+ *   name: name of this task
+ *   basename: name of jar file created, if missing then defaults to name
+ *   classifier: classifier to jar file name
+ *   warname: basename-version of war file, if missing then defaults to basename-version of jar
+ *   wartask: name of war task, if missing then defaults to name of jar task
+ *   TODO(sduchin): replace negative exclusion with positive inclusion
+ *   excl: list of directories to remove from jar
+ *   version: version to be appended to jar file name
+ */
+
+// create all tasks upfront so they appear with 'gradle tasks' command
+mainBuildCache[rules.JAVAWAR2JAR].each { Map.Entry</*dep*/String, /*spec*/ConfigObject> depEntry ->
+  String taskBaseName = depAndTypeToUniqueName(depEntry.key, types.BASE)
+  createWar2JarTask(project, taskBaseName, depEntry.key, depEntry.value)
+}
+
+/** Expand war into directory structure then jar it up. */
+void createWar2JarTask(Project project, String taskBaseName, String dep,
+    ConfigObject javawar2jar) {
+  String taskName = taskBaseName + 'War2Jar'
+  project.task(taskName, type:Jar) {
+    debug 'creating war-to-jar task: ' + taskName
+    group = groups.ARCHIVE
+    description = 'first expand war then jar its classes: ' + dep
+    String wartask = javawar2jar.wartask ?: taskBaseName
+    debug 'depends on: ' + wartask
+    dependsOn wartask + types.WAR // make sure war file is built
+
+    // expand war then jar up all class files
+    doFirst { // this block is only executed during task execution and not during configuration
+      debug 'expanding war: ' + taskName
+
+      // directory where war and jar are located
+      destinationDir = new File("$project.buildDir/dist")
+
+      // expand war (classes and jars) into temporary directory
+      File tmpWarDir = new File("$project.buildDir/tmp/" + taskBaseName + types.WAR)
+      String warName = (javawar2jar.warname ?:
+          (javawar2jar.basename ?: javawar2jar.name) + '-' + javawar2jar.version) +
+          '.war'
+      String expand =
+          'tar -C ' + tmpWarDir + ' -xvf ' + destinationDir.canonicalPath + '/' + warName
+      debug 'expanding command: ' + expand
+      expand.execute()
+
+      File tmpJarDir = new File("$project.buildDir/tmp/" + taskBaseName + types.JAR)
+
+      // copy classes from war to jar temporary directory
+      copyClasses(tmpWarDir.canonicalPath, tmpJarDir.canonicalPath)
+
+      // for each jar expand into jar temporary directory
+      expandJars(tmpWarDir.canonicalPath, tmpJarDir.canonicalPath)
+      // TODO(sduchin): model differently (gradle tasks dependsOn)
+      sleep 10000 // wait for jars to expand [expand.execute().waitFor() hung on largest jar]
+
+      // remove any excluded directories
+      javawar2jar.excl.each { String dir ->
+        String rm = 'rm -rf ' + tmpJarDir + '/' + dir
+        debug 'removing: ' + dir
+        rm.execute()
+      }
+
+      // now define jar variables
+      baseName = javawar2jar.basename ?: javawar2jar.name
+      if (javawar2jar.classifier) {
+        classifier = javawar2jar.classifier
+      }
+      version = javawar2jar.version ?: '0.0'
+      from tmpJarDir
+      debug 'canning [into jar] classes: ' + taskName
+    }
+  }
+}
+
+// TODO(sduchin): Ben recommends a structure like this to avoid sleep and also up-to-date
+//task untar(type: Copy) {
+//  from tarTree(javawar2jar.archivePath)
+//  into project.file("$buildDir/dist/${javawar2jar.archiveName}")
+//}
+//
+//task copyClasses(type: Copy) {
+//  dependsOn untar
+//}
+//
+//task expandJar(type: Copy) {
+//  dependsOn untar
+//}
+//
+//task excludeDir {
+//
+//}
+
+/** Copy all class files. */
+void copyClasses(String tmpWarPath, String tmpJarPath) {
+  String fromDirPath = tmpWarPath + '/WEB-INF/classes/'
+  int startIndex = fromDirPath.length()
+  fileTree(dir: fromDirPath, include: '**/*.class').each { File file ->
+    String relativeFilePath = file.canonicalPath.substring(startIndex)
+    debug ' << ' + relativeFilePath
+    executeCopy(file, tmpJarPath + '/' + relativeFilePath)
+  }
+}
+
+/** Copy all class files. */
+void expandJars(String tmpWarPath, String tmpJarPath) {
+  String fromDirPath = tmpWarPath + '/WEB-INF/lib/'
+  fileTree(dir: fromDirPath, include: '**/*.jar').each { File jar ->
+    String expand = 'tar -C ' + tmpJarPath + ' -xvf ' + jar.canonicalPath
+    debug 'expanding jar: ' + expand
+    expand.execute()
+  }
+}

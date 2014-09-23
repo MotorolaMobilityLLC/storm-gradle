@@ -1,0 +1,220 @@
+apply plugin: UtilitiesPlugin
+
+/** Run this task for any changes in this script class. */
+task utilitiesTest << {
+  assert '*******/n** ? **/n*******/n'.equals(box('?'))
+
+  assert 'javaComMotorolaCommonJar'.equals(
+      depAndTypeToUniqueName('//java/com/motorola/common', types.JAR))
+
+  assert 'java/com/motorola/common'.equals(depToPathAndName('java/com/motorola/common')[0])
+  assert 'common'.equals(depToPathAndName('java/com/motorola/common')[1])
+  assert 'java/com/motorola/common'.equals(depToPathAndName('java/com/motorola/common:other')[0])
+  assert 'other'.equals(depToPathAndName('java/com/motorola/common:other')[1])
+
+  assert '//java/com/motorola/common:other'.equals(
+      expandRelativeDep(':other', '//java/com/motorola/common'))
+  assert '//java/com/motorola/common'.equals(
+      expandRelativeDep('//java/com/motorola/common', '//java/com/motorola/common'))
+
+  assert 'SomeName'.equals(formalize('someName'))
+  assert 'NoChange'.equals(formalize('NoChange'))
+
+  assert '//java/com/motorola/common'.equals(
+      pathAndNameToDep('//java/com/motorola/common', 'common'))
+  assert '//java/com/motorola/common:other'.equals(
+      pathAndNameToDep('//java/com/motorola/common', 'other'))
+
+  assert 'javaComMotorolaCommon'.equals(pathToCamelCase('java/com/motorola/common'))
+
+  assert 'common'.equals(pathToDefaultName('java/com/motorola/common'))
+
+  assert 'this_'.equals(stripAt('this_and_that_and_other', 'and'))
+  assert 'this_and_that_and_other'.equals(stripAt('this_and_that_and_other', 'pattern'))
+
+  assert 'java/com/motorola/common'.equals(stripRootSlashes('//java/com/motorola/common'))
+  assert 'java/com/motorola/common'.equals(stripRootSlashes('java/com/motorola/common'))
+
+  assert 'dev'.equals(verifyEnv('Dev'))
+  assert 'prod'.equals(verifyEnv('prod'))
+  assert 'qa'.equals(verifyEnv('QA'))
+  assert 'staging'.equals(verifyEnv('staGing'))
+  assert verifyEnv('other') == null
+}
+
+class UtilitiesPlugin implements Plugin<Project> {
+  void apply(Project project) {
+    project.convention.plugins.utilities = new UtilitiesPluginDef()
+  }
+}
+
+class UtilitiesPluginDef {
+
+  /** To aid in debugging build processes. */
+  static boolean debug = false
+
+  /** Only prints message when in debug mode. */
+  static void debug(String msg) {
+    if (debug) {
+      println msg
+    }
+  }
+
+  /** Wraps a message into a box to heighten awareness. */
+  static String box(String msg) {
+    int length = 2 + 1 + msg.length() + 1 + 2
+    StringBuilder sb = new StringBuilder();
+    for (int i = 0; i < length; i++) {
+      sb.append('*');
+    }
+    sb.append('\n');
+    String frameLine = sb.toString();
+    sb.append('*')
+        .append('*')
+        .append(' ')
+        .append(msg)
+        .append(' ')
+        .append('*')
+        .append('*')
+        .append('\n')
+        .append(frameLine);
+    return sb.toString()
+  }
+
+  /**
+   * Create unique name based on dependency and type.
+   * Convention is if name is same as package name then don't repeat, otherwise insert 'name'.
+   * e.g., dep=//java/com/motorola/common & type=Jar --> javaComMotorolaCommonJar
+   */
+  static String depAndTypeToUniqueName(String dep, String type) {
+    String[] pathAndName = depToPathAndName(dep)
+    boolean isDefault = pathToDefaultName(pathAndName[0]).equals(pathAndName[1])
+    return pathToCamelCase(pathAndName[0]) + (isDefault ? '' : formalize(pathAndName[1])) + type
+  }
+
+  /**
+   * Converts dependency to path and name.
+   * e.g., dep=//java/com/motorola/common --> [java/com/motorola/common, common]
+   * e.g., dep=//java/com/motorola/common:other --> [java/com/motorola/common, other]
+   */
+  static String[] depToPathAndName(String dep) {
+    String[] pathAndName = new String[2]
+    int colon = dep.indexOf(':')
+    if (colon == -1) {
+      pathAndName[0] = stripRootSlashes(dep)
+      pathAndName[1] = pathToDefaultName(dep)
+    } else {
+      pathAndName[0] = stripRootSlashes(dep.substring(0, colon))
+      pathAndName[1] = dep.substring(colon + 1)
+    }
+    return pathAndName
+  }
+
+  /**
+   * Expand relative dependency (':name') to full dependency.
+   * e.g., dep=:other & origDep=//java/com/motorola/common --> //java/com/motorola/common:other
+   */
+  static String expandRelativeDep(String dep, String origDep) {
+    if (!dep.startsWith(':')) {
+      return dep
+    }
+    String[] pathAndName = depToPathAndName(origDep)
+    return pathAndNameToDep(pathAndName[0], dep.substring(1))
+  }
+
+  /** Moves file to destination path. */
+  static void executeCopy(File file, String destFilePath) {
+    String makeDestDir = 'mkdir -p ' + destFilePath.substring(0, destFilePath.lastIndexOf('/'))
+    String copy = 'cp ' + file.canonicalPath + ' ' + destFilePath
+    makeDestDir.execute()
+    copy.execute()
+  }
+
+  /**
+   * Formalize by making starting character capitalized.
+   * e.g., str=someName --> SomeName
+   */
+  static String formalize(String str) {
+    int length = !str ? 0 : str.length()
+    return new StringBuilder()
+         .append(length == 0 ? '' : str.charAt(0).toUpperCase())
+         .append(length <= 1 ? '' : str.substring(1))
+         .toString();
+  }
+
+  /**
+   * Create dependency based on path and name.
+   * Convention is if name is same as package name then don't repeat, otherwise append ':name'.
+   * e.g., path=//java/com/motorola/common & name=common --> //java/com/motorola/common
+   * e.g., path=java/com/motorola/common & name=other --> //java/com/motorola/common:other
+   */
+  static String pathAndNameToDep(String path, String name) {
+    boolean isDefault = pathToDefaultName(path).equals(name)
+    return (path.startsWith('//') ? '' : '//') + path + (isDefault ? '' : ':' + name)
+  }
+
+  /**
+   * Converts path to camel case.
+   * e.g., path=java/com/motorola/common --> javaComMotorolaCommon
+   */
+  static String pathToCamelCase(String path) {
+    StringBuilder sb = new StringBuilder()
+    for (int i = 0; i < path.length(); i++) {
+      if (path.charAt(i) == '/') {
+        if (++i < path.length()) {
+          sb.append(path.charAt(i).toUpperCase())
+        }
+      } else {
+        sb.append(path.charAt(i))
+      }
+    }
+    return sb.toString()
+  }
+
+  /**
+   * Converts path to its default name (just tail directory name).
+   * e.g., path=java/com/motorola/common --> common
+   */
+  static String pathToDefaultName(String path) {
+    return path.substring(path.lastIndexOf('/') + 1)
+  }
+
+  /**
+   * Strips off balance of string at pattern, if found.
+   * e.g., str=blah_and_pattern_and_more, pattern=pattern --> blah_and_
+   */
+  static String stripAt(String str, String pattern) {
+    int stripIndex = str.indexOf(pattern)
+    return (stripIndex == -1) ? str : str.substring(0, stripIndex)
+  }
+
+  /**
+   * Converts dependency to relative path.
+   * e.g., path=//java/com/motorola/common --> java/com/motorola/common
+   */
+  static String stripRootSlashes(String path) {
+    return path.startsWith('//') ? path.substring(2): path
+  }
+
+  /** Returns a date string for today yyyyMMdd. */
+  static String today() {
+    Date now = new Date()
+    return Integer.toString(now.year + 1900) +
+        (now.month < 9 ? '0' : '') + Integer.toString(now.month + 1) +
+        (now.date <= 9 ? '0' : '') + Integer.toString(now.date)
+  }
+
+  /** Returns env if matches valid types; otherwise, null. */
+  static String verifyEnv(String env) {
+    env = env.toLowerCase();
+    switch (env) {
+      case 'dev':
+      case 'qa':
+      case 'prod':
+      case 'staging':
+        return env
+      default:
+        return null
+    }
+  }
+}

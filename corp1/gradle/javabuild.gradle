@@ -1,0 +1,167 @@
+/**
+ * Process build specifications to create source sets.
+ * Clone to preserve original specifications.
+ * Specifications contain following metadata:
+ *   name: name of build reference (default is current directory name);
+ *         if different then is referred to by appending with ':' after path to package (see deps)
+ *   srcs: sources of build
+ *   excl: sources to be excluded (chose this approach vs. glob(srcs, exclude=[excl])
+ *   deps: dependencies to other sources, there are 3 ways to list them:
+ *         starting with // indicates a relative path from root directory (rootDir)
+ *         ending with :name is a secondary javabuild within BUILD file at relative path
+ *         just :name is a secondary javabuild within same BUILD file
+ *   libs: key from libs.gradle to indicate which external jars are included
+ */
+
+ext.deps = new HashSet<>()
+
+processJavaBuilds(project, new HashMap</*dep*/String, /*spec*/ConfigObject>(
+    (Map<String, ConfigObject>) mainBuildCache[rules.JAVABUILD]), false)
+processJavaBuilds(project, new HashMap</*dep*/String, /*spec*/ConfigObject>(
+    (Map<String, ConfigObject>) testBuildCache[rules.JAVABUILD]), true)
+
+/** Process build specifications to create source sets. */
+void processJavaBuilds(Project project, Map<String, ConfigObject> cache, boolean isTest) {
+  deps.addAll(cache.keySet())
+  int previousSize
+  while (!cache.isEmpty()) {
+    previousSize = cache.size()
+    Iterator<Map.Entry<String, ConfigObject>> depEntries = cache.iterator() // avoid concurrency
+    for (Map.Entry<String, ConfigObject> depEntry : depEntries) {
+      // process only those packages whose dependencies are already resolved
+      if (dependenciesAreResolved(project, deps, depEntry.key, depEntry.value)) {
+        processJavaBuild(project, depEntry.key, depEntry.value, isTest)
+        depEntries.remove()
+      }
+    }
+    if (cache.size() == previousSize) {
+      throw new GradleException(
+          box('cyclic dependencies for javabuild(s): ' + cache.keySet().join(',')))
+    }
+  }
+}
+
+/** Determines if java build has all dependencies resolved. */
+boolean dependenciesAreResolved(Project project, Set<String> deps, String origDep,
+    ConfigObject javabuild) {
+  for (String dep : javabuild.deps) {
+    if (!deps.contains(dep)) {
+      throw new GradleException(box(origDep + ' has unknown deps: ' + dep))
+    }
+    if (!project.javaSourceSets.containsKey(
+        depAndTypeToUniqueName(expandRelativeDep(dep, origDep), types.SOURCE_SET))) {
+      return false // dependency not yet been process; test build never depend on other test builds
+    }
+  }
+  return true
+}
+
+/** Create required build variable per java package. */
+void processJavaBuild(Project project, String dep, ConfigObject javabuild, boolean isTest) {
+  String uniqueSourceSetName = depAndTypeToUniqueName(dep, types.SOURCE_SET)
+  debug 'creating source set: ' + uniqueSourceSetName
+
+  // create configuration and add external dependencies (used in createSourceSet via configName)
+  String configName = depAndTypeToUniqueName(dep, types.CONFIG)
+  project.configurations.create(configName)
+  addLibraries(project, configName, dep, javabuild)
+
+  // create source set
+  SourceSet uniqueSourceSet =
+      createSourceSet(project, uniqueSourceSetName, configName, javabuild, dep, isTest)
+
+  // make sure project adds this BUILD file into test and javadoc
+  if (isTest) {
+    createTestTask(project, uniqueSourceSet)
+  } else {
+    project.javaSourceSets[uniqueSourceSetName] = uniqueSourceSet
+    createJavadocTask(project, uniqueSourceSet)
+  }
+}
+
+/** Add libraries into configuration. */
+void addLibraries(Project project, String configName, String dep, ConfigObject javabuild) {
+  javabuild.libs.each { String libName ->
+    if (!project.libs.containsKey(libName)) {
+      throw new GradleException(box(dep + ' has unknown libs: ' + libName))
+    }
+    project.dependencies.add(configName, project.libs[libName])
+    debug configName + ' << '+ libName
+  }
+}
+
+/** Create source set from BUILD file. */
+SourceSet createSourceSet(Project project, String uniqueSourceSetName, String configName,
+    ConfigObject javabuild, String dep, boolean isTest) {
+  return project.sourceSets.create(uniqueSourceSetName) {
+    java {
+      String srcRoot = rootDir.canonicalPath + (isTest ? '/javatests' : '/java')
+      srcDirs = [srcRoot]
+      String packagePath = stripAt(dep.substring(dep.indexOf('/com/') + 1), ':')
+      javabuild.srcs.each { String source ->
+        include packagePath + '/' + source
+        debug uniqueSourceSetName + ' << '+ packagePath + '/' + source
+      }
+      javabuild.excl.each { String source ->
+        exclude packagePath + '/' + source
+        debug uniqueSourceSetName + ' >> '+ packagePath + '/' + source
+      }
+    }
+
+    // classpath for this source set (default java runtime and libs from this source set)
+    compileClasspath = project.configurations[configName] +
+        (isTest ? project.configurations.testRuntime : project.configurations.runtime)
+
+    // classpath also includes all dependencies
+    javabuild.deps.each { String buildDep ->
+      String uniqueDepName =
+          depAndTypeToUniqueName(expandRelativeDep(buildDep, dep), types.SOURCE_SET)
+      compileClasspath += project.sourceSets."$uniqueDepName".runtimeClasspath
+    }
+
+    // runtime requires compile classpath plus classes of this source set
+    runtimeClasspath = compileClasspath + output
+  }
+}
+
+/** Create javadoc task from BUILD file. */
+void createJavadocTask(Project project, SourceSet uniqueSourceSet) {
+  // set up dependency to build classes first
+  project.classes.dependsOn uniqueSourceSet.classesTaskName
+
+  // create javadoc task
+  String uniqueJavadocName = uniqueSourceSet.name + 'Javadoc'
+  debug 'create javadoc task: ' + uniqueJavadocName
+  project.task(uniqueJavadocName, type:Javadoc) {
+    destinationDir = project.file("$buildDir/javadocs/" + uniqueSourceSet.name)
+    source = uniqueSourceSet.allJava
+    classpath = uniqueSourceSet.compileClasspath
+  }
+
+  // make sure project javadoc task runs picks up this javadoc
+  project.javadoc.dependsOn uniqueJavadocName
+}
+
+/** Create test task from BUILD file. */
+void createTestTask(Project project, SourceSet uniqueSourceSet) {
+  // set up dependency to test classes first
+  project.testClasses.dependsOn uniqueSourceSet.classesTaskName
+
+  // create test task
+  String uniqueTestName = uniqueSourceSet.name + 'Test'
+  project.javatestsNames << uniqueTestName
+  debug 'create test task: ' + uniqueTestName
+  project.task(uniqueTestName, type:Test) {
+    workingDir = project.buildDir
+    testClassesDir = uniqueSourceSet.output.classesDir
+    classpath = uniqueSourceSet.runtimeClasspath
+    reports.html.destination = project.file("$reports.html.destination/" + uniqueSourceSet.name)
+    reports.junitXml.destination =
+        project.file("$reports.junitXml.destination/" + uniqueSourceSet.name)
+    // keep going if errors occur
+    ignoreFailures = true
+  }
+
+  // make sure project test task executes this test
+  project.test.dependsOn uniqueTestName
+}

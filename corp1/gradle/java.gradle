@@ -1,0 +1,14 @@
+apply plugin: 'java'
+
+/** Set testing parameters. */
+test {
+  forkEvery = 100
+  // keep going if errors occur
+  ignoreFailures = true
+  maxParallelForks = Math.max(2, Runtime.runtime.availableProcessors() - 2)
+  // testing errors print on console
+  reports.html.enabled = true
+  testLogging {
+    exceptionFormat 'full'
+  }
+}

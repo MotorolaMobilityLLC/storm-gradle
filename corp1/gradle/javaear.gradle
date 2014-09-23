@@ -1,0 +1,71 @@
+/**
+ * Process build specifications to create ear deploy task.
+ * Specifications contain following metadata:
+ *   name: name of ear task
+ *   earDir: name of ear directory within dist
+ *   from: path to resources included within ear file
+ * Parameters command line arguments:
+ *   -Penv=xxx (there must be an xxx directory at 'fromEnv' path; defaults to 'dev')
+ */
+
+// create all tasks upfront so they appear with 'gradle tasks' command
+mainBuildCache[rules.JAVAEAR].each { Map.Entry</*dep*/ String, /*spec*/ ConfigObject> depEntry ->
+  // ...War -Penv=dev
+  String env = project.hasProperty('env') ? project.getProperty('env') : 'dev'
+  createDeployTasks(project, depEntry.key, env, depEntry.value);
+}
+
+/** Create tasks to deploy ear file and dispatch.xml. */
+void createDeployTasks(Project project, String dep, String env, ConfigObject javaear) {
+  String taskName = depAndTypeToUniqueName(dep, types.DEPLOY)
+  String dispatchName = taskName + 'DispatchXml'
+  File earDir = new File("$project.buildDir/dist/" + javaear.earDir)
+
+  project.task(taskName, type:Exec) {
+    debug 'creating deploy ear task: ' + taskName
+    group = groups.ARCHIVE
+    description = 'deploying ear file for: ' + dep
+
+    doFirst { // this block is only executed during task execution and not during configuration
+      debug 'deploying ear task: ' + taskName
+
+      copy {
+        from javaear.from
+        into earDir
+        include 'META-INF/**'
+      }
+      copy {
+        from javaear.from + '/' + env
+        into earDir
+      }
+
+      // deploy expanded ear directory
+      commandLine = [ 'appcfg.sh', '--oauth2', 'update', earDir.getCanonicalPath() ]
+      String deploy = 'appcfg.sh --oauth2 update ' + earDir.getCanonicalPath()
+      println box('executing: ' + deploy)
+    }
+
+    doLast { // this block deploys the dispatch.xml file after the ear has been deployed
+      project.tasks.getByPath(dispatchName).execute()
+    }
+  }
+
+  project.task(dispatchName, type:Exec) {
+    debug 'creating deploy ear task: ' + dispatchName
+    group = groups.ARCHIVE
+    description = 'deploying dispatch.xml for: ' + dep
+
+    doFirst { // this block is only executed during task execution and not during configuration
+      debug 'deploying ear task: ' + dispatchName
+
+      // upload dispatch.xml
+      File dispatch = new File(earDir, 'default/WEB-INF/dispatch.xml')
+      if (dispatch.exists()) {
+        String defaultDir = earDir.getCanonicalPath() + '/default'
+        commandLine = ['appcfg.sh', '--oauth2', 'update_dispatch', defaultDir]
+        String update = 'appcfg.sh --oauth2 update_dispatch ' + defaultDir
+        println box('executing: ' + update)
+      }
+    }
+  }
+}

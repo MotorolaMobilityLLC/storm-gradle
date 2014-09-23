@@ -1,0 +1,31 @@
+/**
+ * Set up JAva COde COverage (JaCoCo).
+ * The following are issues with JaCoCo not reporting coverages:
+ *    1) private constructors
+ *    2) try with resources
+ */
+project(':storm') {
+  apply plugin: 'jacoco'
+
+  dependencies {
+    jacocoAgent libs.jacocoAgent
+    jacocoAnt libs.jacocoAnt
+  }
+
+  jacocoTestReport {
+    group = groups.AGGR
+    description = "generate Jacoco coverage reports after running tests."
+    dependsOn project.tests // make sure classes are built
+
+    sourceSets project.javaSourceSets.values() as SourceSet[]
+    List<String> execNames = project.javatestsNames.collect { uniqueTestName ->
+      "$buildDir/jacoco/${uniqueTestName}.exec"
+    }
+    executionData = project.files(execNames)
+    reports {
+      xml.enabled false
+      csv.enabled false
+      html.destination "${buildDir}/jacocoHtml"
+    }
+  }
+}

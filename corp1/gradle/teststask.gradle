@@ -1,0 +1,13 @@
+project(':storm') {
+
+  /** Test aggregator. */
+  task tests(type: TestReport) {
+    group = groups.AGGR
+    description = 'all test results --> .../build/storm/aggregates/tests/index.html'
+
+    destinationDir = file("$buildDir/aggregates/tests")
+    reportOn tasks.findAll { Task task ->
+      return task.name.endsWith('Test') && !task.group.equals(groups.TESTSUITE)
+    }
+  }
+}

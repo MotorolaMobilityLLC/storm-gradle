@@ -1,0 +1,157 @@
+/**
+ * Process build specifications to create war tasks.
+ * Specifications contain following metadata:
+ *   name: name of war task
+ *   basename: name of war file created, if missing then defaults to name
+ *   earDir: name of an optional ear directory within dist
+ *   from: path to resources included within war file
+ *   fromEnv: path to resources specialized per environment
+ *   version: default if not provided on command line (-Pver)
+ * Parameters command line arguments:
+ *   -Penv=xxx (there must be an xxx directory at 'fromEnv' path; defaults to 'dev')
+ *   -Pver=zzz (any version can be specified; defaults to javawar.version)
+ */
+
+// create all tasks upfront so they appear with 'gradle tasks' command
+mainBuildCache[rules.JAVAWAR].each { Map.Entry</*dep*/ String, /*spec*/ ConfigObject> depEntry ->
+  // ...War -Penv=dev
+  String env = project.hasProperty('env') ? project.getProperty('env') : 'dev'
+  createWarTask(project, depEntry.key, env, depEntry.value);
+  // if part of an ear, only deploy from the ear task
+  if (!depEntry.value.earDir) {
+    createDeployTask(project, depEntry.key, env, depEntry.value);
+  }
+}
+
+/** Create a task to produce war file. */
+void createWarTask(Project project, String dep, String env, ConfigObject javawar) {
+  String taskName = depAndTypeToUniqueName(dep, types.WAR)
+  project.task(taskName, type:War) {
+    debug 'creating war task: ' + taskName
+    group = groups.ARCHIVE
+    description = 'create war file for: ' + dep
+    // TODO(sduchin): if testsuite provided in war section depend on that instead of all tests
+    dependsOn project.test // make sure classes are built
+
+    // define war variables
+    baseName = javawar.basename ?: javawar.name
+    destinationDir = new File("$project.buildDir/dist")
+
+    // ...War -Pver=1
+    String ver = project.hasProperty('ver') ? project.getProperty('ver') : javawar.version
+    version = env + '-' + today() + '-' + ver
+
+    doFirst { // this block is only executed during task execution and not during configuration
+      debug 'processing war task: ' + taskName
+
+      if (javawar.from) {
+        from javawar.from
+      }
+      if (javawar.fromEnv) {
+        from ("${javawar.fromEnv}/${env}") {
+          expand('version': ver)
+        }
+      }
+
+      processJavaWar(project, dep, taskName,
+          (Map<String, ConfigObject>) mainBuildCache[rules.JAVABUILD])
+    }
+
+    doLast { // only after the war is created then expand it
+      debug 'expanding war task: ' + taskName
+
+      // expand war file
+      File war = findWar(env, baseName)
+      File warExpand = warExpand(war, javawar)
+      if (warExpand.exists()) {
+        println "deleting existing ${warExpand} directory"
+        "rm -rf ${warExpand}".execute().waitFor()
+      }
+      warExpand.mkdir()
+      ant.unzip(src: war, dest: warExpand)
+    }
+  }
+}
+
+/** Process war and build specifications to complete war task. */
+void processJavaWar(Project project, String dep, String taskName,
+    Map<String, ConfigObject> javabuilds) {
+  project.tasks.getByName(taskName) {
+    // include source from path directory
+    String sourceSetName = depAndTypeToUniqueName(dep, types.SOURCE_SET)
+    debug 'war source set: ' + sourceSetName
+    classpath = project.sourceSets."$sourceSetName".output
+
+    // process all dependencies (only once per spec)
+    List<String> depsToProcess = [dep]
+    List<String> depsProcessed = []
+    while (!depsToProcess.isEmpty()) {
+      String nextDep = depsToProcess.get(0)
+      depsToProcess.remove(0)
+      if (!depsProcessed.contains(nextDep)) {
+        depsProcessed.add(nextDep)
+        debug sourceSetName + ' << ' + nextDep
+        classpath += project.configurations[depAndTypeToUniqueName(nextDep, types.CONFIG)] +
+            project.sourceSets[depAndTypeToUniqueName(nextDep, types.SOURCE_SET)].compileClasspath
+        ConfigObject javabuild = javabuilds[nextDep]
+        if (!javabuild) {
+          throw new GradleException(box(taskName + ' missing javabuild: ' + nextDep))
+        }
+        javabuild.deps.each { String buildDep ->
+          depsToProcess.add(expandRelativeDep(buildDep, nextDep))
+        }
+      }
+    }
+    classpath.each {
+      debug sourceSetName + ' <<< ' + it
+    }
+  }
+}
+
+/** Create a task to deploy war file. */
+void createDeployTask(Project project, String dep, String env, ConfigObject javawar) {
+  String taskName = depAndTypeToUniqueName(dep, types.DEPLOY)
+  project.task(taskName, type: Exec) {
+    debug 'creating deploy war task: ' + taskName
+    group = groups.ARCHIVE
+    description = 'deploying war file for: ' + dep
+
+    doFirst { // this block is only executed during task execution and not during configuration
+      debug 'deploying war task: ' + taskName
+
+      // define war variables
+      String baseName = javawar.basename ?: javawar.name
+
+      // expand war file
+      File war = findWar(env, baseName)
+      File warExpand = warExpand(war, javawar)
+
+      // deploy expanded war directory
+      commandLine = ['appcfg.sh', '--oauth2', 'update', warExpand.getCanonicalPath()]
+      String deploy = 'appcfg.sh --oauth2 update ' + warExpand.getCanonicalPath()
+      println box('executing: ' + deploy)
+    }
+  }
+}
+
+/** Finds war file to operate on. */
+File findWar(String env, String baseName) {
+  File war = null;
+  fileTree(dir: new File("$project.buildDir/dist"), include: "${baseName}-${env}-*.war").each
+      { File file ->
+    if (war != null) {
+      throw new GradleException(box("more than one war named \"${baseName}-${env}-*.war\""))
+    }
+    war = file
+  }
+  if (war == null) {
+    throw new GradleException(box("no war named \"${baseName}-${env}-*.war\""))
+  }
+  return war
+}
+
+/** Points to directory to expand war. */
+File warExpand(File war, ConfigObject javawar) {
+  return javawar.earDir ? new File("$project.buildDir/dist", javawar.earDir)
+      : new File(war.getCanonicalPath() - '.war')
+}

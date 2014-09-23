@@ -1,0 +1,37 @@
+/**
+ * Process build specifications to create test suites.
+ * Specifications contain following metadata:
+ *   name: name of test suite
+ *   tests: paths to packages of tests to run
+ */
+processTestSuites(project,
+    (Map</*dep*/String, /*spec*/ConfigObject>) testBuildCache[rules.TESTSUITE],
+    (Map</*dep*/String, /*spec*/ConfigObject>) testBuildCache[rules.JAVABUILD])
+
+/** Create test task and depend on those tests listed. */
+void processTestSuites(Project project,
+    Map<String, ConfigObject> testsuites, Map<String, ConfigObject> testbuilds) {
+  testsuites.keySet().each { String dep ->
+    createTestTask(project, dep, testsuites, testbuilds)
+  }
+}
+
+/** Create test task only referencing other test tasks. */
+void createTestTask(Project project, String dep,
+    Map<String, ConfigObject> testsuites, Map<String, ConfigObject> testbuilds) {
+  String taskName = depAndTypeToUniqueName(dep, types.TEST)
+  project.task(taskName) {
+    debug 'creating testsuite task: ' + taskName
+    group = groups.TESTSUITE
+    description = 'executes test suite for ' + dep
+
+    testsuites[dep].tests.each { String dep2 ->
+      String testDep = expandRelativeDep(dep2, dep)
+      if (!testbuilds.containsKey(testDep) && !testsuites.containsKey(testDep)) {
+        throw new GradleException(box(uniqueTestName + ' references unknown test: ' + testDep))
+      }
+      dependsOn depAndTypeToUniqueName(testDep, types.TEST)
+      debug taskName + ' << ' + testDep
+    }
+  }
+}

@@ -1,0 +1,33 @@
+# function to only add to path once
+function classpathadd() {
+  if [ -z "$CLASSPATH" ]; then
+    export CLASSPATH=$1
+  fi
+  case ":$CLASSPATH:" in
+    *":$1:"*) :;;
+    *) CLASSPATH=$CLASSPATH:$1;;
+  esac
+}
+function pathadd() {
+  case ":$PATH:" in
+    *":$1:"*) :;;
+    *) PATH=$PATH:$1;;
+  esac
+}
+
+# define your IDE for plugin support, may override with "intellij" after sourcing this file
+export STORM_IDE=eclipse
+
+# define home of storm repo
+export STORM_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+echo $STORM_HOME
+# define home of external central repo
+export STORM_CENTRAL=$STORM_HOME/stormcentral
+source $STORM_CENTRAL/centralrc
+
+# define root package of development (override this value in calling bashrc file)
+export STORM_ROOT_PACKAGE='/com/motorola/'
+
+# shortcut aliases
+alias s='cd $STORM_HOME; pwd'
+alias c='cd $STORM_CENTRAL; pwd'

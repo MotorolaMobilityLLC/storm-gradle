@@ -1,0 +1,14 @@
+# required exports
+export APPENGINE_JAVA_SDK=$STORM_CENTRAL/google/java/appengine-java-sdk/v1.9.6
+export CHECKSTYLE_JAR=$STORM_CENTRAL/third_party/java/checkstyle/v5.7/checkstyle-5.7-all.jar
+export GCD_HOME=$STORM_CENTRAL/tools/gcd-v1beta2-rev1-2.1.1
+export GCD_PORT=9091
+export GRADLE_HOME=$STORM_CENTRAL/tools/gradle-2.0
+export GROOVY_HOME=$STORM_CENTRAL/tools/groovy-2.3.0
+
+# path changes
+pathadd $APPENGINE_JAVA_SDK/bin
+pathadd $GCD_HOME
+pathadd $GRADLE_HOME/bin
+pathadd $GROOVY_HOME/bin
+pathadd $STORM_CENTRAL/bin
